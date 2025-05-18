@@ -1,0 +1,633 @@
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Animated,
+  TouchableOpacity,
+  Modal,
+  TextInput,
+  Button,
+  Alert,
+  Image,
+} from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { supabase } from '../../lib/supabase';
+import { RouteProp } from '@react-navigation/native';
+
+type RootStackParamList = {
+  gameboardscreen: { gameCode: string; gameId: string; userId: string };
+};
+
+type GameBoardScreenRouteProp = RouteProp<RootStackParamList, 'gameboardscreen'>;
+ 
+const diceImages: { [key: number]: any } = {
+  1: require('../../assets/d1.png'),
+  2: require('../../assets/d2.png'),
+  3: require('../../assets/d3.png'),
+  4: require('../../assets/d4.png'),
+  5: require('../../assets/d5.png'),
+  6: require('../../assets/d6.png'),
+};
+
+const GameBoard: React.FC<{ route: GameBoardScreenRouteProp; navigation: any }> = ({ route, navigation }) => {
+  const [diceValue, setDiceValue] = useState<number>(1);
+  const [isRolling, setIsRolling] = useState(false); // Track the rolling state
+  const [isPopupVisible, setIsPopupVisible] = useState(false);
+  const [currentWord, setCurrentWord] = useState('');
+  const [currentCellLetter, setCurrentCellLetter] = useState('');
+  const [isRewardVisible, setIsRewardVisible] = useState(false);
+  const [showWarning, setShowWarning] = useState(false); // Track if warning message should be shown
+  const [wordSubmitted, setWordSubmitted] = useState(false);
+  const [timeCountdown, setCountdown] = useState(5);
+  const [isVisibleTime, setisVisibleTime] = useState(false);
+  const [gameId, setCurrentGameCode] = useState<string | null>(null);
+  const { gameCode, userId } = route.params;
+//  setGameCode(gameCode);
+  const gridSize = 6;
+  const validWords = [
+    'apple', 'ela', 'hope', 'iwi', 'oak', 'nga', 'pa', 'use',
+    'kya', 'manu', 'nun', 'place', 'rag', 'town', 'work',
+  ]; 
+
+  const boardLetters = [
+    'A', 'E', 'H', 'I', 'O', 'NG',
+    'P', '', '', '', '', 'U',
+    '?', '', '', '', '', '?',
+    'K', '', '', '', '', 'M',
+    'N', '', '', '', '', '?',
+    'P', 'R', '?', 'T', 'W', 'A',
+  ];
+
+  const outerIndices = [//active
+    0, 1, 2, 3, 4, 5, 11, 17, 23, 29, 35, 34, 33, 32, 31, 30, 24, 18, 12, 6,
+  ];
+  const playerIcons = ['🕹️', '🧑‍🚀', '🤠', '👽'];
+  const initialPlayerPositions = [
+    0, // Top-left corner
+    gridSize - 1, // Top-right corner
+    gridSize * (gridSize - 1), // Bottom-left corner
+    gridSize * gridSize - 1, // Bottom-right corner
+  ];
+
+  const [players, setPlayers] = useState(
+    playerIcons.map((icon, index) => ({
+      position: initialPlayerPositions[index],
+      icon,
+      score: 0,
+    }))
+  );
+  const [currentPlayer, setCurrentPlayer] = useState(0);
+  const playerAnims = useRef(
+    playerIcons.map((_, index) => {
+      const row = Math.floor(initialPlayerPositions[index] / gridSize);
+      const col = initialPlayerPositions[index] % gridSize;
+      return new Animated.ValueXY({ x: col * 50, y: row * 50 });
+    })
+  ).current;
+
+
+  useEffect(() => {
+    if (isRolling) {
+      setisVisibleTime(true);
+      const intervalId = setInterval(() => {
+        setCountdown((prevTime) => {
+          if (prevTime > 1) return prevTime - 1;
+          clearInterval(intervalId);
+          setisVisibleTime(false);
+          handleDiceClick(); // Automatically roll the dice when time is up
+          return 5; // Reset timer for the next turn
+        });
+      }, 1000);
+
+      return () => clearInterval(intervalId);
+    }
+  }, [isRolling]);
+  useEffect(() => {
+    fetchAndUpdateGameState();
+  }, [gameId]);
+  useEffect(() => {
+    // Only set this once or when route.params.gameCode changes
+    setCurrentGameCode(route.params.gameCode);
+  }, [route.params.gameCode]);
+  
+
+  const handleDiceClick = () => {
+    if (!isRolling) {
+      setIsRolling(true); // Start the rolling animation
+
+      // Start the dice animation
+      const randomDelay = Math.floor(Math.random() * 3000) + 1000; // Random delay between 1 and 4 seconds
+      const randomValue = Math.floor(Math.random() * 6) + 1;
+
+      // Set the dice value after the delay
+      setTimeout(() => {
+        setDiceValue(randomValue);
+        setIsRolling(false); // Stop the rolling animation
+        movePlayer(randomValue); // Move the player based on the rolled value
+      }, randomDelay);
+    }
+  };
+  const fetchAndUpdateGameState = async () => {
+    const { data, error } = await supabase
+      .from('games')
+      .select('code, game_state')
+      .eq('id', gameId)
+      .single();
+  
+    if (error) {
+      console.error('Error fetching game state:', error);
+      return;
+    }
+  
+    if (data) {
+      setGameCode(data.code);
+      const gameState = data.game_state;
+      setPlayers(gameState.players.map((player: any) => ({
+        ...player,
+        position: player.position,
+        icon: player.icon,
+        score: player.points,
+      })));
+      setCurrentPlayer(gameState.currentTurn);
+    }
+  };
+  
+
+  const movePlayer = async (steps: number) => {
+    const currentIndex = outerIndices.indexOf(players[currentPlayer].position);
+    let newIndex = (currentIndex + steps) % outerIndices.length;
+    const newPosition = outerIndices[newIndex];
+  
+    setTimeout(async () => {
+      const row = Math.floor(newPosition / gridSize);
+      const col = newPosition % gridSize;
+  
+      // Update player position in Supabase
+      const updatedPlayers = players.map((player, index) => 
+        index === currentPlayer ? { ...player, position: newPosition } : player
+      );
+  
+      const { data, error } = await supabase
+        .from('games')
+        .update({
+          game_state: {
+            players: updatedPlayers,
+            currentTurn: (currentPlayer + 1) % players.length,
+            winner: null,
+          },
+        })
+        .eq('id', gameId);
+  
+      if (error) {
+        console.error('Error updating game state:', error);
+      } else {
+        fetchAndUpdateGameState();
+      }
+  
+      // Update local state
+      setPlayers((prevPlayers) => {
+        const updatedPlayers = [...prevPlayers];
+        updatedPlayers[currentPlayer].position = newPosition;
+        return updatedPlayers;
+      });
+
+      Animated.timing(playerAnims[currentPlayer], {
+        toValue: { x: col * 50, y: row * 50 },
+        duration: 500,
+        useNativeDriver: false,
+      }).start(() => {
+        // Delay before showing the popup
+        setTimeout(() => {
+          let cellLetter = boardLetters[newPosition] || '';
+          if (cellLetter === '?') cellLetter = 'NG'; // Handle special case
+          setCurrentCellLetter(cellLetter);
+          setCurrentWord(''); // Clear previous input
+          setIsPopupVisible(true);
+          setWordSubmitted(false); // Show popup
+        }, 1000); // Delay for popup
+      });
+    }, 1000); // Delay for movement
+  };
+
+  const handleWordSubmit = async () => {
+    const lowerCaseWord = currentWord.toLowerCase();
+    const lowerCaseCellLetter = currentCellLetter.toLowerCase();
+    if (lowerCaseWord.startsWith(lowerCaseCellLetter)) {
+    if (validWords.includes(lowerCaseWord)) {
+      const updatedPlayers = players.map((player, index) => 
+        index === currentPlayer ? { ...player, points: player.score + 10 } : player
+      );
+  
+      const { data, error } = await supabase
+        .from('games')
+        .update({
+          game_state: {
+            players: updatedPlayers,
+            currentTurn: (currentPlayer + 1) % players.length,
+            winner: null,
+          },
+        })
+        .eq('id', gameId);
+        Alert.alert('Correct!', 'You earned 10 points!');
+  
+      if (error) {
+        console.error('Error updating game state:', error);
+      } else {
+        fetchAndUpdateGameState();
+      }
+    }else{
+      Alert.alert('Incorrect', 'The word does not match any valid entries.');
+    }
+  
+      // ... rest of the function remains the same
+    }else {
+      Alert.alert(
+        'Invalid Word',
+        `The word must start with the letter "${currentCellLetter}".`
+      );
+    }
+  
+    
+    /*if (lowerCaseWord.startsWith(lowerCaseCellLetter)) {
+      if (validWords.includes(lowerCaseWord)) {
+        setPlayers((prevPlayers) => {
+          const updatedPlayers = [...prevPlayers];
+          updatedPlayers[currentPlayer].score += 10;
+
+          if (updatedPlayers[currentPlayer].score >= 20) {
+            setIsRewardVisible(true); // Show reward modal
+          }
+          return updatedPlayers;
+        });
+        Alert.alert('Correct!', 'You earned 10 points!');
+      } else {
+        Alert.alert('Incorrect', 'The word does not match any valid entries.');
+      }
+    } else {
+      Alert.alert(
+        'Invalid Word',
+        `The word must start with the letter "${currentCellLetter}".`
+      );
+    }
+      */
+    
+
+    setCurrentWord('');
+    setIsPopupVisible(false);
+    setWordSubmitted(true);
+    setIsRolling(false);
+    setCurrentPlayer((prevPlayer) => (prevPlayer + 1) % players.length);
+  };
+
+  const handleClose = () => {
+    navigation.navigate('GameDetailsScreen');
+  };
+
+  const isOuterCell = (rowIndex: number, colIndex: number) => {
+    return (
+      rowIndex === 0 ||
+      rowIndex === gridSize - 1 ||
+      colIndex === 0 ||
+      colIndex === gridSize - 1
+    );
+  };
+
+
+useEffect(() => {
+  let warningTimeout: NodeJS.Timeout;
+
+  if (wordSubmitted) {
+    warningTimeout = setTimeout(() => {
+      setShowWarning(true);
+      
+      setTimeout(() => {
+        setShowWarning(false);
+      }, 3000); 
+    }, 5000); // 5 seconds after the word is submitted
+
+    // Clear the timeout when the word is submitted or the dice is rolled again
+    return () => {
+      clearTimeout(warningTimeout);
+    };
+  }
+
+  return () => {};
+}, [wordSubmitted]);
+
+  return (
+    <View style={styles.container}>
+       
+      <View style={styles.headerContainer}>
+        <TouchableOpacity style={styles.dictionaryIcon} onPress={() => navigation.navigate('Dictionary')}>
+          <Image source={require('../../assets/Dictionary.png')} style={{ width: 40, height: 40 }} />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.settingsIcon} onPress={() => navigation.navigate('Settings')}>
+          <Image source={require('../../assets/Settings.png')} style={styles.settingsImage} />
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.scoresContainer}>
+        {players.map((player, index) => (
+          <Text key={index} style={styles.scoreText}>
+            {player.icon}: {player.score} pts
+          </Text>
+        ))}
+      </View>
+
+      <View style={styles.board}>
+        {Array.from({ length: gridSize }).map((_, rowIndex) => (
+          <View key={rowIndex} style={styles.row}>
+            {Array.from({ length: gridSize }).map((_, colIndex) => {
+              if (!isOuterCell(rowIndex, colIndex)) return <View key={colIndex} style={styles.emptyCell} />;
+
+              const tileIndex = rowIndex * gridSize + colIndex;
+              const tileLetter = boardLetters[tileIndex] || '';
+              return (
+                <View key={colIndex} style={[styles.cell, tileLetter === '🎯' ? styles.startTile : styles.normalTile]}>
+                  <Text style={styles.cellText}>{tileLetter}</Text>
+                </View>
+              );
+            })}
+          </View>
+        ))}
+        {players.map((player, index) => (
+          <Animated.View key={index} style={[styles.playerToken, playerAnims[index].getLayout()]}>
+            <Text style={styles.playerEmoji}>{player.icon}</Text>
+          </Animated.View>
+        ))}
+      </View>
+
+      <TouchableOpacity style={styles.diceContainer} onPress={handleDiceClick}>
+        {isRolling ? (
+          <Image source={require('../../assets/dice.gif')} style={styles.gif} />
+        ) : (
+          <Image source={diceImages[diceValue]} style={styles.gif} />
+        )}
+      </TouchableOpacity>
+      <Text style={styles.diceValue}></Text>
+
+       {showWarning && (
+          <View style={styles.warningContainer}>
+          <Text style={styles.warningText}>Please roll the dice!</Text>
+        </View>
+      )} 
+      {isVisibleTime && (
+        <View style={styles.timeContainer}>
+          {timeCountdown === 0 ? (
+            <Text style={styles.countdownText}>Time up!</Text>
+          ) : (
+            <Text style={styles.countdownText}>Time left: {timeCountdown}s</Text>
+          )}
+        </View>
+      )}
+
+      <Modal visible={isPopupVisible} transparent={true} animationType="slide">
+        <View style={styles.popupContainer}>
+          <View style={styles.popup}>
+            <Text style={styles.popupText}>
+              Enter a word with the letter: <Text style={styles.highlight}>{currentCellLetter}</Text>
+            </Text>
+            <TextInput style={styles.input} value={currentWord} onChangeText={setCurrentWord} placeholder="Type your word here" />
+            <Button title="Submit" onPress={handleWordSubmit} />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={isRewardVisible} transparent={true} animationType="slide">
+        <View style={styles.rewardContainer}>
+          <View style={styles.rewardPopup}>
+            <Text style={styles.rewardText}>🎉 Congratulations! 🎉</Text>
+            <Text style={styles.rewardText}>The winner is {players.length > 0 ? players[0].icon : 'No one'}!</Text>
+            {players.map((player, index) => (
+              <Text key={index} style={styles.rewardScore}>
+                {player.icon}: {player.score} pts
+              </Text>
+            ))}
+            <Button title="Close" onPress={handleClose} color="#841584" />
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+};
+
+
+const styles = StyleSheet.create({
+  dictionaryIcon:{
+    position: 'absolute',
+    top: 10,  
+    left: 10, 
+    width:100,
+    height:100
+  },
+
+  settingsIcon: {
+    position: 'absolute',
+    top: 10,  
+    right: 10, 
+  },
+  settingsImage: {
+    width: 30, 
+    height: 30, 
+    resizeMode: 'contain',
+  },
+  headerContainer: {
+    position: 'absolute',
+    top: 20,
+    left: 10,
+    right: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    zIndex: 1, // Ensure icons are above other elements
+  },
+  icon: {
+    padding: 10,
+  },
+  header: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 20,
+  },
+  gif: {
+    marginTop:-200,
+    width: 80,
+    height: 80,
+  },
+  result: {
+    marginTop: 20,
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  container: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#D8CCB7",
+  },
+  board: {
+    width: 300,
+    height: 300,
+    position: "relative",
+  },
+  row: {
+    flexDirection: "row",
+  },
+  cell: {
+    width: 50,
+    height: 50,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#4b3621",
+  },
+  normalTile: {
+    backgroundColor: "#ffffff",
+  },
+  startTile: {
+    backgroundColor: "#FFD700",
+  },
+  cellText: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#4b3621",
+  },
+  emptyCell: {
+    width: 50,
+    height: 50,
+    backgroundColor: "transparent",
+  },
+  playerToken: {
+    position: "absolute",
+    width: 50,
+    height: 50,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 215, 0, 0.7)",
+    borderRadius: 25,
+  },
+  playerEmoji: {
+    fontSize: 30,
+  },
+  diceContainer: {
+    marginTop: 10,
+    alignItems: "center",
+  },
+  diceButton: {
+    // backgroundColor: "#4b3621",
+    padding: 20,
+    borderRadius: 10,
+  },
+  diceButtonText: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  diceValue: {
+    marginTop: 10,
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  popupContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+  },
+  popup: {
+    width: 300,
+    padding: 20,
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+  popupText: {
+    fontSize: 18,
+    marginBottom: 10,
+    textAlign: "center",
+    color: "#4b3621",
+  },
+  highlight: {
+    fontWeight: "bold",
+    color: "#ff4500",
+  },
+  input: {
+    height: 40,
+    borderColor: "#ccc",
+    borderWidth: 1,
+    marginBottom: 10,
+    paddingHorizontal: 10,
+    borderRadius: 5,
+  },
+  scoresContainer: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    width: "100%",
+    marginBottom: 20,
+  },
+  scoreText: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#4b3621",
+  },
+  rewardContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+  },
+  rewardPopup: {
+    width: 300,
+    padding: 20,
+    backgroundColor: 'white',
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  rewardText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 20,
+  },
+  rewardScore: {
+    fontSize: 18,
+    marginBottom: 10,
+  },
+  warningContainer: {
+    position: 'absolute',
+    bottom:100,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(255, 0, 0, 0.7)', // Red background with transparency
+    padding: 16,
+    // marginLeft:50,  
+    // marginRight:100,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+  },
+  warningText: {
+    fontSize: 18,
+    color: 'white',
+    fontWeight: 'bold',
+  },
+  countdownText: {
+    fontSize: 50,
+    fontWeight: "bold",
+    color: "#4b3621",
+  },
+  timeContainer: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    width: "100%",
+    height: "10%", // Adjusted for better positioning
+    marginBottom: 20,
+  },
+});
+
+export default GameBoard;
